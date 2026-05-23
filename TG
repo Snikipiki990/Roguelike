@@ -1,0 +1,751 @@
+import requests
+import json
+import time
+import re
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Tuple, List
+
+TOKEN = ''
+BASE_URL = f'https://api.telegram.org/bot{TOKEN}'
+
+CURRENCIES = {
+    'USD': ('Доллар США', '💵'),
+    'EUR': ('Евро', '💶'),
+    'RUB': ('Российский рубль', '₽'),
+    'GBP': ('Фунт стерлингов', '💷'),
+    'CNY': ('Китайский юань', '🇨🇳'),
+    'JPY': ('Японская иена', '💴'),
+    'CHF': ('Швейцарский франк', '🇨🇭'),
+    'CAD': ('Канадский доллар', '🇨🇦'),
+    'AUD': ('Австралийский доллар', '🇦🇺'),
+    'TRY': ('Турецкая лира', '🇹🇷'),
+    'INR': ('Индийская рупия', '🇮🇳'),
+    'KZT': ('Казахстанский тенге', '🇰🇿'),
+    'UAH': ('Украинская гривна', '🇺🇦'),
+    'BYN': ('Белорусский рубль', '🇧🇾'),
+    'PLN': ('Польский злотый', '🇵🇱'),
+    'SEK': ('Шведская крона', '🇸🇪'),
+    'NOK': ('Норвежская крона', '🇳🇴'),
+    'DKK': ('Датская крона', '🇩🇰'),
+    'CZK': ('Чешская крона', '🇨🇿'),
+    'HUF': ('Венгерский форинт', '🇭🇺'),
+    'ILS': ('Израильский шекель', '🇮🇱'),
+    'MXN': ('Мексиканское песо', '🇲🇽'),
+    'BRL': ('Бразильский реал', '🇧🇷'),
+    'ZAR': ('Южноафриканский ранд', '🇿🇦'),
+    'AED': ('Дирхам ОАЭ', '🇦🇪'),
+    'KRW': ('Южнокорейская вона', '🇰🇷'),
+    'SGD': ('Сингапурский доллар', '🇸🇬'),
+    'HKD': ('Гонконгский доллар', '🇭🇰'),
+    'NZD': ('Новозеландский доллар', '🇳🇿'),
+}
+
+RUSSIAN_NAMES = {
+    'доллар': 'USD', 'доллара': 'USD', 'долларов': 'USD', 'бакс': 'USD', 'бакса': 'USD', 'баксов': 'USD',
+    'евро': 'EUR', 'евра': 'EUR', 'евров': 'EUR',
+    'рубль': 'RUB', 'рубля': 'RUB', 'рублей': 'RUB', 'руб': 'RUB',
+    'фунт': 'GBP', 'фунта': 'GBP', 'фунтов': 'GBP', 'стерлинг': 'GBP',
+    'юань': 'CNY', 'юаня': 'CNY', 'юаней': 'CNY',
+    'иена': 'JPY', 'иены': 'JPY', 'иен': 'JPY',
+    'франк': 'CHF', 'франка': 'CHF', 'франков': 'CHF',
+    'лира': 'TRY', 'лиры': 'TRY', 'лир': 'TRY',
+    'тенге': 'KZT', 'тенге': 'KZT',
+    'гривна': 'UAH', 'гривны': 'UAH', 'гривен': 'UAH',
+    'рупия': 'INR', 'рупии': 'INR', 'рупий': 'INR',
+    'злотый': 'PLN', 'злотого': 'PLN', 'злотых': 'PLN',
+    'крона': 'SEK', 'кроны': 'SEK', 'крон': 'SEK',
+    'шекель': 'ILS', 'шекеля': 'ILS', 'шекелей': 'ILS',
+    'песо': 'MXN', 'песо': 'MXN',
+    'реал': 'BRL', 'реала': 'BRL', 'реалов': 'BRL',
+    'ранд': 'ZAR', 'ранда': 'ZAR', 'рандов': 'ZAR',
+    'дирхам': 'AED', 'дирхама': 'AED', 'дирхамов': 'AED',
+    'вона': 'KRW', 'воны': 'KRW', 'вон': 'KRW',
+    'доллар гонконга': 'HKD', 'гонконгский доллар': 'HKD',
+}
+
+rates_cache = {
+    'rates': {},
+    'timestamp': None
+}
+CACHE_MINUTES = 5
+
+user_data = {}
+
+def send_message(chat_id: int, text: str, reply_markup: Dict = None, parse_mode: str = 'Markdown'):
+    url = f'{BASE_URL}/sendMessage'
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': parse_mode
+    }
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
+    
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Ошибка отправки сообщения: {e}")
+        return None
+
+def edit_message(chat_id: int, message_id: int, text: str, reply_markup: Dict = None, parse_mode: str = 'Markdown'):
+    url = f'{BASE_URL}/editMessageText'
+    payload = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': text,
+        'parse_mode': parse_mode
+    }
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
+    
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Ошибка редактирования сообщения: {e}")
+        return None
+
+def answer_callback_query(callback_query_id: str):
+    url = f'{BASE_URL}/answerCallbackQuery'
+    payload = {'callback_query_id': callback_query_id}
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Ошибка answerCallbackQuery: {e}")
+
+def get_updates(offset: int = None) -> List[Dict]:
+    url = f'{BASE_URL}/getUpdates'
+    payload = {'timeout': 30}
+    if offset:
+        payload['offset'] = offset
+    
+    try:
+        response = requests.get(url, params=payload, timeout=35)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('ok'):
+                return data.get('result', [])
+    except Exception as e:
+        print(f"Ошибка получения обновлений: {e}")
+    return []
+
+
+def get_main_keyboard():
+    return {
+        'inline_keyboard': [
+            [{'text': '🔄 Конвертировать', 'callback_data': 'convert_menu'}],
+            [{'text': '➕ Сложить валюты', 'callback_data': 'sum_menu'}],
+            [{'text': '📊 Курсы валют', 'callback_data': 'show_rates'}],
+            [{'text': '📋 Список валют', 'callback_data': 'show_list'}],
+            [{'text': '❓ Помощь', 'callback_data': 'help'}],
+        ]
+    }
+
+def get_back_menu():
+    return {
+        'inline_keyboard': [
+            [{'text': '🔙 В главное меню', 'callback_data': 'back_to_menu'}]
+        ]
+    }
+
+def get_convert_from_keyboard():
+    keyboard = []
+    major_currencies = ['USD', 'EUR', 'RUB', 'GBP', 'CNY', 'JPY']
+    
+    for i in range(0, len(major_currencies), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(major_currencies):
+                code = major_currencies[i + j]
+                emoji = CURRENCIES[code][1]
+                row.append({'text': f"{emoji} {code}", 'callback_data': f'select_from_{code}'})
+        keyboard.append(row)
+    
+    keyboard.append([{'text': '📋 Все валюты', 'callback_data': 'show_list'}])
+    keyboard.append([{'text': '🔙 Назад', 'callback_data': 'back_to_menu'}])
+    
+    return {'inline_keyboard': keyboard}
+
+def get_convert_to_keyboard(from_currency: str):
+    keyboard = []
+    major_currencies = ['USD', 'EUR', 'RUB', 'GBP', 'CNY', 'JPY']
+    
+    for i in range(0, len(major_currencies), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(major_currencies):
+                code = major_currencies[i + j]
+                if code != from_currency:
+                    emoji = CURRENCIES[code][1]
+                    row.append({'text': f"{emoji} {code}", 'callback_data': f'select_to_{code}'})
+        if row:
+            keyboard.append(row)
+    
+    keyboard.append([{'text': '📋 Все валюты', 'callback_data': 'show_list'}])
+    keyboard.append([{'text': '🔙 Назад', 'callback_data': 'convert_menu'}])
+    
+    return {'inline_keyboard': keyboard}
+
+def get_result_keyboard():
+    return {
+        'inline_keyboard': [
+            [{'text': '🔄 Новая конвертация', 'callback_data': 'convert_menu'}],
+            [{'text': '➕ Сложить валюты', 'callback_data': 'sum_menu'}],
+            [{'text': '🔙 В главное меню', 'callback_data': 'back_to_menu'}]
+        ]
+    }
+
+def get_sum_result_keyboard():
+    return {
+        'inline_keyboard': [
+            [{'text': '➕ Новое сложение', 'callback_data': 'sum_menu'}],
+            [{'text': '🔙 В главное меню', 'callback_data': 'back_to_menu'}]
+        ]
+    }
+
+
+def get_free_rates(base_currency: str = 'USD') -> Optional[Dict]:
+    try:
+        response = requests.get(f'https://api.exchangerate-api.com/v4/latest/{base_currency}', timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ API: получено {len(data['rates'])} курсов")
+            return data['rates']
+        else:
+            print(f"❌ API вернул статус: {response.status_code}")
+            return None
+    except requests.Timeout:
+        print("❌ Таймаут при запросе к API")
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка API: {e}")
+        return None
+
+def get_unified_rates() -> Optional[Dict[str, float]]:
+    global rates_cache
+
+    if rates_cache['timestamp'] and datetime.now() - rates_cache['timestamp'] < timedelta(minutes=CACHE_MINUTES):
+        print("📦 Использую кэшированные курсы")
+        return rates_cache['rates']
+
+    print("🔄 Обновляю курсы валют...")
+
+    free_rates = get_free_rates('USD')
+
+    if not free_rates:
+        print("❌ Не удалось получить курсы")
+        return None
+
+    unified_rates = {}
+
+    if 'RUB' in free_rates:
+        usd_to_rub = free_rates['RUB']
+
+        for code in CURRENCIES.keys():
+            if code == 'RUB':
+                unified_rates[code] = 1.0
+            elif code == 'USD':
+                unified_rates[code] = usd_to_rub
+            elif code in free_rates:
+                unified_rates[code] = usd_to_rub / free_rates[code]
+
+        print(f"✅ Курсы обновлены: USD = {unified_rates.get('USD', 0):.2f} RUB")
+        rates_cache['rates'] = unified_rates
+        rates_cache['timestamp'] = datetime.now()
+        return unified_rates
+    else:
+        print("❌ В API нет курса RUB")
+        return None
+
+def convert(amount: float, from_currency: str, to_currency: str, rates: Dict[str, float]) -> Optional[float]:
+    from_rate = rates.get(from_currency.upper())
+    to_rate = rates.get(to_currency.upper())
+
+    if not from_rate or not to_rate:
+        return None
+
+    amount_in_rub = amount * from_rate
+    result = amount_in_rub / to_rate
+    return result
+
+def parse_sum_input(text: str, rates: Dict[str, float]) -> Tuple[Optional[float], Optional[str]]:
+    text = text.lower().strip()
+    text = text.replace('+', ' + ')
+    text = text.replace('и', '+')
+    text = text.replace('плюс', '+')
+
+    pattern = r'(\d+(?:[.,]\d+)?)\s*([a-zа-яё$€£₽]+)'
+    matches = re.findall(pattern, text)
+
+    if len(matches) < 2:
+        return None, None
+
+    total_rub = 0.0
+    calculation_parts = []
+
+    for amount_str, currency_text in matches:
+        try:
+            amount = float(amount_str.replace(',', '.'))
+            currency_code = None
+
+            if currency_text.upper() in CURRENCIES:
+                currency_code = currency_text.upper()
+            elif currency_text in RUSSIAN_NAMES:
+                currency_code = RUSSIAN_NAMES[currency_text]
+
+            if currency_code and currency_code in rates:
+                rub_amount = amount * rates[currency_code]
+                total_rub += rub_amount
+
+                emoji = CURRENCIES.get(currency_code, (currency_code, '💱'))[1]
+                calculation_parts.append(f"{emoji} {amount} {currency_code}")
+            else:
+                return None, None
+        except ValueError:
+            return None, None
+
+    if len(calculation_parts) >= 2:
+        result_text = " + ".join(calculation_parts)
+        return total_rub, result_text
+
+    return None, None
+
+def parse_user_input(text: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+    text = text.lower().strip()
+    text = text.replace(',', '.')
+
+    if '+' in text or ' плюс ' in text or ' и ' in text:
+        return 'sum', None, None
+
+    words_to_remove = ['переведи', 'конвертируй', 'сколько', 'будет', 'в', 'из', 'по', 'помоги']
+    for word in words_to_remove:
+        text = text.replace(word, '')
+
+    parts = text.split()
+
+    amount = None
+    from_curr = None
+    to_curr = None
+
+    valid_codes = set(CURRENCIES.keys())
+
+    if '→' in text or '->' in text or ' в ' in text:
+        arrow_pos = -1
+        for i, part in enumerate(parts):
+            if part in ['→', '->', 'в']:
+                arrow_pos = i
+                break
+
+        if arrow_pos > 0:
+            left_parts = parts[:arrow_pos]
+            right_parts = parts[arrow_pos+1:]
+
+            for part in left_parts:
+                try:
+                    amount = float(part)
+                except ValueError:
+                    part_upper = part.upper()
+                    if part_upper in valid_codes:
+                        from_curr = part_upper
+                    elif part in RUSSIAN_NAMES:
+                        from_curr = RUSSIAN_NAMES[part]
+
+            for part in right_parts:
+                part_upper = part.upper()
+                if part_upper in valid_codes:
+                    to_curr = part_upper
+                elif part in RUSSIAN_NAMES:
+                    to_curr = RUSSIAN_NAMES[part]
+
+    if amount is None or from_curr is None or to_curr is None:
+        for part in parts:
+            try:
+                if amount is None:
+                    amount = float(part)
+                continue
+            except ValueError:
+                pass
+
+            part_upper = part.upper()
+            if part_upper in valid_codes:
+                if from_curr is None:
+                    from_curr = part_upper
+                else:
+                    to_curr = part_upper
+            elif part in RUSSIAN_NAMES:
+                if from_curr is None:
+                    from_curr = RUSSIAN_NAMES[part]
+                else:
+                    to_curr = RUSSIAN_NAMES[part]
+
+    return amount, from_curr, to_curr
+
+def format_number(num: float) -> str:
+    if num >= 1:
+        return f"{num:,.2f}".replace(",", " ")
+    else:
+        return f"{num:.4f}"
+
+
+def handle_start(chat_id: int):
+    welcome_text = (
+        f"🌟 *Добро пожаловать!*\n\n"
+        f"Я *Конвертер Валют* — ваш помощник в мире финансов. 💰\n\n"
+        f"🇷🇺 *Что я умею:*\n"
+        f"• 💱 Конвертировать любые валюты\n"
+        f"• ➕ Складывать разные валюты\n"
+        f"• 📊 Показывать актуальные курсы\n"
+        f"• 🌍 Поддерживаю {len(CURRENCIES)} валют\n\n"
+        f"📝 *Как пользоваться:*\n"
+        f"• Конвертация: `100 usd rub` или `100 долларов в евро`\n"
+        f"• Сложение: `100 usd + 50 eur` или `100 долларов и 50 евро`\n\n"
+        f"💡 *Попробуйте прямо сейчас!*"
+    )
+    send_message(chat_id, welcome_text, get_main_keyboard())
+
+def handle_help(chat_id: int, message_id: int = None):
+    help_text = (
+        "📖 *Помощь по использованию бота*\n\n"
+        "*1. Конвертация валют:*\n"
+        "   • `100 usd rub` — 100 долларов в рубли\n"
+        "   • `50 eur usd` — 50 евро в доллары\n"
+        "   • `100 долларов в евро` — на русском\n\n"
+        "*2. Сложение валют:*\n"
+        "   • `100 usd + 50 eur` — сумма в долларах и евро\n"
+        "   • `100 долларов и 50 евро` — на русском\n"
+        "   • `50 usd + 30 eur + 20 gbp` — несколько валют\n\n"
+        "*3. Доступные команды:*\n"
+        f"• /start — Главное меню\n"
+        f"• /help — Эта справка\n"
+        f"• /rates — Текущие курсы валют\n"
+        f"• /list — Список всех валют\n\n"
+        f"*Поддерживается {len(CURRENCIES)} валют*"
+    )
+    
+    if message_id:
+        edit_message(chat_id, message_id, help_text, get_back_menu())
+    else:
+        send_message(chat_id, help_text, get_back_menu())
+
+def handle_rates(chat_id: int, message_id: int = None):
+    if message_id:
+        edit_message(chat_id, message_id, "🔄 Загружаю актуальные курсы...")
+    
+    rates = get_unified_rates()
+
+    if not rates:
+        msg = "❌ Не удалось получить курсы валют. Проверьте подключение к интернету."
+        if message_id:
+            edit_message(chat_id, message_id, msg)
+        else:
+            send_message(chat_id, msg)
+        return
+
+    rates_text = f"📊 *Курсы валют к рублю*\n"
+    rates_text += f"🕐 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n\n"
+
+    top_currencies = ['USD', 'EUR', 'GBP', 'CNY', 'JPY', 'CHF', 'CAD', 'AUD', 'TRY', 'KZT', 'UAH', 'BYN', 'PLN']
+
+    for code in top_currencies:
+        if code in CURRENCIES and code in rates:
+            name, emoji = CURRENCIES[code]
+            rate = rates[code]
+            if rate >= 1:
+                rates_text += f"{emoji} 1 {code} = {rate:.2f} ₽\n"
+            else:
+                rates_text += f"{emoji} 1 {code} = {rate:.4f} ₽\n"
+
+    rates_text += f"\n💡 *Совет:* Курсы обновляются каждые 5 минут\n"
+    rates_text += f"📋 Полный список: /list"
+
+    if message_id:
+        edit_message(chat_id, message_id, rates_text, get_back_menu())
+    else:
+        send_message(chat_id, rates_text, get_back_menu())
+
+def handle_list(chat_id: int, message_id: int = None):
+    list_text = "📋 *Доступные валюты*\n\n"
+
+    major = ['USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CNY']
+    europe = ['PLN', 'SEK', 'NOK', 'DKK', 'CZK', 'HUF']
+    asia = ['INR', 'KRW', 'SGD', 'HKD', 'ILS', 'AED']
+    cis = ['RUB', 'KZT', 'UAH', 'BYN']
+    other = ['AUD', 'CAD', 'NZD', 'TRY', 'MXN', 'BRL', 'ZAR']
+
+    list_text += "*🌍 Основные валюты:*\n"
+    for code in major:
+        if code in CURRENCIES:
+            name, emoji = CURRENCIES[code]
+            list_text += f"{emoji} *{code}* — {name}\n"
+
+    list_text += "\n*🇪🇺 Европейские валюты:*\n"
+    for code in europe:
+        if code in CURRENCIES:
+            name, emoji = CURRENCIES[code]
+            list_text += f"{emoji} *{code}* — {name}\n"
+
+    list_text += "\n*🇦🇸 Азиатские валюты:*\n"
+    for code in asia:
+        if code in CURRENCIES:
+            name, emoji = CURRENCIES[code]
+            list_text += f"{emoji} *{code}* — {name}\n"
+
+    list_text += "\n*🇷🇺 Валюты СНГ:*\n"
+    for code in cis:
+        if code in CURRENCIES:
+            name, emoji = CURRENCIES[code]
+            list_text += f"{emoji} *{code}* — {name}\n"
+
+    list_text += "\n*🌎 Другие валюты:*\n"
+    for code in other:
+        if code in CURRENCIES:
+            name, emoji = CURRENCIES[code]
+            list_text += f"{emoji} *{code}* — {name}\n"
+
+    list_text += f"\n✅ *Всего валют:* {len(CURRENCIES)}\n"
+    list_text += "\n💡 *Примеры:*\n"
+    list_text += "• `100 usd rub` — конвертация\n"
+    list_text += "• `100 usd + 50 eur` — сложение"
+
+    if message_id:
+        edit_message(chat_id, message_id, list_text, get_back_menu())
+    else:
+        send_message(chat_id, list_text, get_back_menu())
+
+def handle_convert_menu(chat_id: int, message_id: int):
+    edit_message(chat_id, message_id, 
+                 "🔄 *Выберите валюту, ИЗ которой хотите конвертировать:*",
+                 get_convert_from_keyboard())
+
+def handle_sum_menu(chat_id: int, message_id: int):
+    user_data[chat_id] = {'awaiting_sum': True}
+    
+    help_text = (
+        "➕ *Сложение валют*\n\n"
+        "Напишите сумму в разных валютах через плюс:\n\n"
+        "📝 *Примеры:*\n"
+        "• `100 usd + 50 eur`\n"
+        "• `100 долларов и 50 евро`\n"
+        "• `50 usd + 30 eur + 20 gbp`\n\n"
+        "💡 *Результат будет показан в рублях*\n\n"
+        "✏️ *Введите ваш запрос:*"
+    )
+    edit_message(chat_id, message_id, help_text, get_back_menu())
+
+def handle_select_from(chat_id: int, message_id: int, from_currency: str):
+    if chat_id not in user_data:
+        user_data[chat_id] = {}
+    user_data[chat_id]['from_currency'] = from_currency
+    
+    from_name = CURRENCIES[from_currency][0]
+    from_emoji = CURRENCIES[from_currency][1]
+    
+    edit_message(chat_id, message_id,
+                 f"{from_emoji} Вы выбрали: *{from_name} ({from_currency})*\n\n"
+                 f"📤 *Выберите валюту, В которую хотите конвертировать:*",
+                 get_convert_to_keyboard(from_currency))
+
+def handle_select_to(chat_id: int, message_id: int, to_currency: str):
+    user_data[chat_id]['to_currency'] = to_currency
+    user_data[chat_id]['awaiting_amount'] = True
+    
+    from_currency = user_data[chat_id]['from_currency']
+    from_name = CURRENCIES[from_currency][0]
+    from_emoji = CURRENCIES[from_currency][1]
+    to_name = CURRENCIES[to_currency][0]
+    
+    edit_message(chat_id, message_id,
+                 f"{from_emoji} *Конвертация:* {from_name} → {to_name}\n\n"
+                 f"✏️ *Введите сумму в {from_currency}:*\n\n"
+                 f"Например: `100` или `50.5`\n\n"
+                 f"*Для отмены напишите:* /cancel")
+
+def handle_text_conversion(chat_id: int, text: str):
+    if text.lower() == '/cancel':
+        if chat_id in user_data:
+            user_data[chat_id] = {}
+        send_message(chat_id, "✅ Действие отменено. Используйте /start для главного меню.", get_main_keyboard())
+        return
+    
+    if '+' in text or ' плюс ' in text or ' и ' in text:
+        handle_sum(chat_id, text)
+        return
+    
+    if user_data.get(chat_id, {}).get('awaiting_amount'):
+        try:
+            amount = float(text.replace(',', '.'))
+            from_curr = user_data[chat_id]['from_currency']
+            to_curr = user_data[chat_id]['to_currency']
+            
+            if amount <= 0:
+                send_message(chat_id, "❌ Пожалуйста, введите положительное число.")
+                return
+            
+            send_message(chat_id, "🔄 Получаю актуальный курс...")
+            rates = get_unified_rates()
+            
+            if rates:
+                result = convert(amount, from_curr, to_curr, rates)
+                
+                if result is not None:
+                    from_name = CURRENCIES[from_curr][0]
+                    from_emoji = CURRENCIES[from_curr][1]
+                    to_name = CURRENCIES[to_curr][0]
+                    to_emoji = CURRENCIES[to_curr][1]
+                    
+                    result_text = (
+                        f"✅ *Результат конвертации:*\n\n"
+                        f"{from_emoji} {format_number(amount)} {from_curr} ({from_name})\n"
+                        f"➡️\n"
+                        f"{to_emoji} {format_number(result)} {to_curr} ({to_name})\n\n"
+                        f"📊 *Курс:* 1 {from_curr} = {(result / amount):.4f} {to_curr}"
+                    )
+                    
+                    send_message(chat_id, result_text, get_result_keyboard())
+                else:
+                    send_message(chat_id, "❌ Ошибка при конвертации. Проверьте правильность валют.")
+            else:
+                send_message(chat_id, "❌ Не удалось получить курсы валют. Попробуйте позже.")
+            
+            user_data[chat_id] = {}
+            
+        except ValueError:
+            send_message(chat_id, "❌ Пожалуйста, введите корректное число (например: 100 или 50.5)")
+        return
+    
+    amount, from_curr, to_curr = parse_user_input(text)
+    
+    if amount is None or from_curr is None or to_curr is None:
+        send_message(chat_id,
+                     "❌ Не удалось распознать запрос.\n\n"
+                     "📝 *Правильные форматы:*\n"
+                     "• Конвертация: `100 usd rub` или `100 долларов в евро`\n"
+                     "• Сложение: `100 usd + 50 eur` или `100 долларов и 50 евро`\n\n"
+                     "💡 Напишите /help для подробной инструкции.")
+        return
+    
+    send_message(chat_id, "🔄 Получаю актуальный курс...")
+    rates = get_unified_rates()
+    
+    if rates:
+        result = convert(amount, from_curr, to_curr, rates)
+        
+        if result is not None:
+            from_name = CURRENCIES.get(from_curr, (from_curr, '💱'))[0]
+            from_emoji = CURRENCIES.get(from_curr, (from_curr, '💱'))[1]
+            to_name = CURRENCIES.get(to_curr, (to_curr, '💱'))[0]
+            to_emoji = CURRENCIES.get(to_curr, (to_curr, '💱'))[1]
+            
+            result_text = (
+                f"✅ *Результат:*\n\n"
+                f"{from_emoji} {format_number(amount)} {from_curr}\n"
+                f"➡️\n"
+                f"{to_emoji} {format_number(result)} {to_curr}\n\n"
+                f"📊 Курс: 1 {from_curr} = {(result / amount):.4f} {to_curr}"
+            )
+            
+            send_message(chat_id, result_text, get_result_keyboard())
+        else:
+            send_message(chat_id, "❌ Ошибка при конвертации.")
+    else:
+        send_message(chat_id, "❌ Не удалось получить курсы валют.")
+
+def handle_sum(chat_id: int, text: str):
+    send_message(chat_id, "🔄 Получаю актуальные курсы...")
+    
+    rates = get_unified_rates()
+    
+    if not rates:
+        send_message(chat_id, "❌ Не удалось получить курсы валют. Попробуйте позже.")
+        return
+    
+    total_rub, calculation = parse_sum_input(text, rates)
+    
+    if total_rub is None:
+        send_message(chat_id,
+                     "❌ Не удалось распознать запрос.\n\n"
+                     "📝 *Правильные форматы:*\n"
+                     "• `100 usd + 50 eur`\n"
+                     "• `100 долларов и 50 евро`\n\n"
+                     "💡 Используйте /sum для помощи")
+        return
+    
+    result_text = (
+        f"➕ *Результат сложения:*\n\n"
+        f"{calculation}\n\n"
+        f"💰 *Общая сумма:* {format_number(total_rub)} ₽\n"
+        f"📊 Курсы обновлены: {datetime.now().strftime('%H:%M:%S')}"
+    )
+    
+    send_message(chat_id, result_text, get_sum_result_keyboard())
+    
+    if chat_id in user_data:
+        user_data[chat_id].pop('awaiting_sum', None)
+
+
+def main():
+    print("Бот запущен")    
+    last_update_id = 0
+    
+    while True:
+        try:
+            updates = get_updates(last_update_id + 1 if last_update_id else None)
+            
+            for update in updates:
+                last_update_id = update['update_id']
+                
+                if 'callback_query' in update:
+                    callback = update['callback_query']
+                    chat_id = callback['message']['chat']['id']
+                    message_id = callback['message']['message_id']
+                    callback_data = callback['data']
+                    callback_id = callback['id']
+                    
+                    answer_callback_query(callback_id)
+                    
+                    if callback_data == 'back_to_menu':
+                        handle_start(chat_id)
+                    elif callback_data == 'help':
+                        handle_help(chat_id, message_id)
+                    elif callback_data == 'show_rates':
+                        handle_rates(chat_id, message_id)
+                    elif callback_data == 'show_list':
+                        handle_list(chat_id, message_id)
+                    elif callback_data == 'convert_menu':
+                        handle_convert_menu(chat_id, message_id)
+                    elif callback_data == 'sum_menu':
+                        handle_sum_menu(chat_id, message_id)
+                    elif callback_data.startswith('select_from_'):
+                        currency = callback_data.replace('select_from_', '')
+                        handle_select_from(chat_id, message_id, currency)
+                    elif callback_data.startswith('select_to_'):
+                        currency = callback_data.replace('select_to_', '')
+                        handle_select_to(chat_id, message_id, currency)
+                
+                elif 'message' in update:
+                    message = update['message']
+                    chat_id = message['chat']['id']
+                    text = message.get('text', '')
+                    
+                    if text.startswith('/start'):
+                        handle_start(chat_id)
+                    elif text.startswith('/help'):
+                        handle_help(chat_id)
+                    elif text.startswith('/rates'):
+                        handle_rates(chat_id)
+                    elif text.startswith('/list'):
+                        handle_list(chat_id)
+                    elif text.startswith('/'):
+                        send_message(chat_id, "❌ Неизвестная команда. Используйте /help", get_main_keyboard())
+                    else:
+                        handle_text_conversion(chat_id, text)
+            
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"Ошибка в главном цикле: {e}")
+            time.sleep(3)
+
+if __name__ == '__main__':
+    main()
